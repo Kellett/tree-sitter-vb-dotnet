@@ -8,6 +8,9 @@
 // @ts-check
 
 // Tree-sitter grammar for Visual Basic .NET, based on the official VB.NET language specification.
+// A comma, and the line break an implicit continuation may put after it (spaces or a comment may come first).
+const COMMA = token(seq(',', optional(seq(/[ \t]*/, optional(seq("'", /[^\r\n]*/)), /\r?\n/))));
+
 module.exports = grammar({
   name: 'vb_dotnet',
 
@@ -40,6 +43,7 @@ module.exports = grammar({
     [$.empty_statement, $.if_statement],
     [$.namespace_name, $.attribute],
     [$.namespace_name],
+    [$.re_dim_clause, $.argument],
   ],
 
   rules: {
@@ -168,8 +172,9 @@ module.exports = grammar({
       field('modifiers', optional($.modifiers)),
       kw('Enum'),
       field('name', $.identifier),
+      optional(seq(kw('As'), field('underlying_type', $.type))),
       $._terminator,
-      repeat($.enum_member),
+      repeat(choice($.enum_member, alias($._terminator, $.blank_line))),
       kw('End'), kw('Enum'), $._terminator
     ),
     enum_member: $ => seq(
@@ -253,14 +258,15 @@ module.exports = grammar({
       $.dim_statement,
       $.method_declaration,
       $.constructor_declaration,
+      $.operator_declaration,
       $.property_declaration,
       $.event_declaration,
-      $.type_declaration        // nested Class/Module/Structure/Interface/Enum/Delegate
+      seq(repeat(seq(field('attributes', $.attribute_block), optional($._terminator))), $.type_declaration)  // nested Class/Module/Structure/Interface/Enum/Delegate
     ),
 
     // Constant definitions (inside classes or procedures)
     const_declaration: $ => seq(
-      optional(seq(field('attributes', $.attribute_block), optional($._terminator))),
+      repeat(seq(field('attributes', $.attribute_block), optional($._terminator))),
       field('modifiers', optional($.modifiers)),
       kw('Const'),
       commaSep1(seq(
@@ -277,7 +283,7 @@ module.exports = grammar({
     // matches both this and dim_statement, and the parser resolves a method's
     // body away in favour of a bodyless method followed by fields.
     field_declaration: $ => seq(
-      optional(seq(field('attributes', $.attribute_block), optional($._terminator))),
+      repeat(seq(field('attributes', $.attribute_block), optional($._terminator))),
       field('modifiers', $.modifiers),
       optional(kw('Dim')),
       commaSep1($.variable_declarator),
@@ -285,9 +291,9 @@ module.exports = grammar({
     ),
     variable_declarator: $ => seq(
       field('name', $.identifier),
-      optional($.array_rank_specifier),
+      repeat($.array_rank_specifier),
       optional($.as_clause),
-      optional(seq('=', field('initializer', $.expression)))
+      optional(seq('=', optional($._newline), field('initializer', $.expression)))
     ),
     array_rank_specifier: $ => seq(
       '(',
@@ -305,6 +311,7 @@ module.exports = grammar({
         $.primitive_type,
         $.array_type,
         $.generic_type,
+        $.tuple_type,
         seq($.namespace_name, optional($.type_argument_list), optional($.array_rank_specifier))
       ),
       optional('?')   // nullable value type
@@ -313,14 +320,24 @@ module.exports = grammar({
     generic_type: $ => prec.left(3, seq(
       $.namespace_name,
       $.type_argument_list,
+      repeat(seq('.', $.identifier, optional($.type_argument_list))),
       optional($.array_rank_specifier)
     )),
 
-    array_type: $ => seq(
+    // `(Kind As SyntaxKind, Text As String)`, `(Integer, String)`
+    tuple_type: $ => seq(
+      '(',
+      commaSep1(seq(optional(seq(field('name', $.identifier), kw('As'))), $.type)),
+      ')'
+    ),
+
+    // `Foo()` also matches `type`'s own namespace_name + array_rank_specifier; the dynamic
+    // precedence makes it an array_type every time.
+    array_type: $ => prec.dynamic(1, prec.right(seq(
       choice($.primitive_type, $.namespace_name),
       optional($.type_argument_list),
-      $.array_rank_specifier
-    ),
+      repeat1($.array_rank_specifier)
+    ))),
 
     primitive_type: $ => token(choice(  // built-in types
       rawkw('Boolean'), rawkw('Byte'), rawkw('Short'), rawkw('Integer'), rawkw('Long'),
@@ -342,7 +359,7 @@ module.exports = grammar({
 
     // Method (Sub/Function) declaration inside a class/module or as a procedure in a module
     method_declaration: $ => seq(
-      optional(seq(field('attributes', $.attribute_block), optional($._terminator))),
+      repeat(seq(field('attributes', $.attribute_block), optional($._terminator))),
       field('modifiers', optional($.modifiers)),
       choice(kw('Sub'), kw('Function')),
       field('name', $.identifier),
@@ -363,7 +380,7 @@ module.exports = grammar({
 
     // Constructor (Sub New) declaration
     constructor_declaration: $ => seq(
-      optional(seq(field('attributes', $.attribute_block), optional($._terminator))),
+      repeat(seq(field('attributes', $.attribute_block), optional($._terminator))),
       field('modifiers', optional($.modifiers)),
       kw('Sub'), kw('New'),
       field('parameters', $.parameter_list),
@@ -374,9 +391,23 @@ module.exports = grammar({
       )
     ),
 
+    // Operator declaration: `Public Shared Operator +(a As T, b As T) As T`
+    operator_declaration: $ => seq(
+      repeat(seq(field('attributes', $.attribute_block), optional($._terminator))),
+      field('modifiers', optional($.modifiers)),
+      kw('Operator'),
+      field('operator', choice('+', '-', '*', '/', '\\', '^', '&', '=', '<>', '<', '>', '<=', '>=', '<<', '>>',
+        kw('Mod'), kw('And'), kw('Or'), kw('Xor'), kw('Not'), kw('Like'), kw('IsTrue'), kw('IsFalse'), kw('CType'))),
+      field('parameters', $.parameter_list),
+      optional(seq(kw('As'), field('return_type', $.type))),
+      $._terminator,
+      repeat($.statement),
+      kw('End'), kw('Operator'), $._terminator
+    ),
+
     // Property declaration (auto or with getters/setters)
     property_declaration: $ => seq(
-      optional(seq(field('attributes', $.attribute_block), optional($._terminator))),
+      repeat(seq(field('attributes', $.attribute_block), optional($._terminator))),
       field('modifiers', optional($.modifiers)),
       kw('Property'),
       field('name', $.identifier),
@@ -411,7 +442,7 @@ module.exports = grammar({
 
     // Event declaration (regular or custom event with add/remove/raise handlers)
     event_declaration: $ => seq(
-      optional(seq(field('attributes', $.attribute_block), optional($._terminator))),
+      repeat(seq(field('attributes', $.attribute_block), optional($._terminator))),
       field('modifiers', optional($.modifiers)),
       kw('Event'),
       field('name', $.identifier),
@@ -446,7 +477,7 @@ module.exports = grammar({
     ),
 
     // Parameter list for methods/delegates (Parentheses with comma-separated parameters)
-    parameter_list: $ => seq('(', optional(commaSep($.parameter)), ')'),
+    parameter_list: $ => seq('(', optional($._newline), optional(commaSep($.parameter)), optional($._newline), ')'),
     // parameter: $ => seq(
     //   optional(choice(kw('ByVal'), kw('ByRef'), kw('ParamArray'))),
     //   field('name', $.identifier),
@@ -484,6 +515,7 @@ module.exports = grammar({
       $.using_statement,
       $.sync_lock_statement,
       $.return_statement,
+      $.yield_statement,
       $.exit_statement,
       $.continue_statement,
       $.throw_statement,
@@ -501,7 +533,7 @@ module.exports = grammar({
     label_statement: $ => seq(field('label', $.identifier), ':'),
 
     dim_statement: $ => seq(
-      kw('Dim'),
+      choice(kw('Dim'), seq(kw('Static'), optional(kw('Dim')))),
       commaSep1($.variable_declarator),
       $._terminator
     ),
@@ -509,6 +541,7 @@ module.exports = grammar({
     compound_assignment_statement: $ => seq(
       field('left', $.left_hand_side),
       field('operator', choice('+=', '-=', '*=', '/=', '\\=', '^=', '&=', '<<=', '>>=')),
+      optional($._newline),
       field('right', $.expression),
       $._terminator
     ),
@@ -516,6 +549,7 @@ module.exports = grammar({
     assignment_statement: $ => seq(
       field('left', $.left_hand_side),
       '=',
+      optional($._newline),
       field('right', $.expression),
       $._terminator
     ),
@@ -572,6 +606,8 @@ module.exports = grammar({
     _inline_statement: $ => choice(
       $._if_inline_core,
       seq(kw('Return'), optional($.expression)),
+      seq(kw('Yield'), $.expression),
+      seq(kw('RaiseEvent'), field('name', $.identifier), optional($.argument_list)),
       seq(kw('Throw'), optional($.expression)),
       seq(kw('Exit'), choice(kw('Sub'), kw('Function'), kw('Property'), kw('Do'), kw('For'), kw('While'), kw('Select'), kw('Try'))),
       seq(kw('Continue'), choice(kw('Do'), kw('For'), kw('While'))),
@@ -732,6 +768,8 @@ module.exports = grammar({
 
     return_statement: $ => seq(kw('Return'), optional($.expression), $._terminator),
 
+    yield_statement: $ => seq(kw('Yield'), $.expression, $._terminator),
+
     exit_statement: $ => seq(kw('Exit'), choice(kw('Sub'), kw('Function'), kw('Property'), kw('Do'), kw('For'), kw('While'), kw('Select'), kw('Try')), $._terminator),
 
     continue_statement: $ => seq(kw('Continue'), choice(kw('Do'), kw('For'), kw('While')), $._terminator),
@@ -743,18 +781,23 @@ module.exports = grammar({
     redim_statement: $ => seq(
       kw('ReDim'),
       optional(kw('Preserve')),
-      commaSep1(seq(field('array', $.identifier), $.re_dim_clause)),
+      commaSep1(choice(
+        prec.dynamic(1, seq(field('array', $.identifier), $.re_dim_clause)),
+        field('array', $.expression)  // `Me.items(n)`, `a.b(n)`: the bounds are the call's arguments
+      )),
       $._terminator
     ),
     re_dim_clause: $ => seq(
-      '(', field('upper_bound', $.expression), optional(seq(kw('To'), $.expression)), ')'
+      '(',
+      commaSep1(seq(field('upper_bound', $.expression), optional(seq(kw('To'), $.expression)))),
+      ')'
     ),
 
     add_handler_statement: $ => seq(
-      kw('AddHandler'), field('event', $.expression), ',', field('handler', $.expression), $._terminator
+      kw('AddHandler'), field('event', $.expression), COMMA, field('handler', $.expression), $._terminator
     ),
     remove_handler_statement: $ => seq(
-      kw('RemoveHandler'), field('event', $.expression), ',', field('handler', $.expression), $._terminator
+      kw('RemoveHandler'), field('event', $.expression), COMMA, field('handler', $.expression), $._terminator
     ),
 
     raise_event_statement: $ => seq(
@@ -772,11 +815,14 @@ module.exports = grammar({
     expression: $ => choice(
       $.literal,
       $.identifier,
+      alias($._contextual_keyword, $.identifier),
       $.parenthesized_expression,
       $.member_access,
       $.with_member_access,
       $.element_access,
       $.invocation,
+      $.generic_name,
+      $.tuple_expression,
       $.unary_expression,
       $.binary_expression,
       $.ternary_expression,
@@ -792,9 +838,10 @@ module.exports = grammar({
       '}'
     ),
 
-    parenthesized_expression: $ => seq('(', $.expression, ')'),
+    parenthesized_expression: $ => seq('(', optional($._newline), $.expression, optional($._newline), ')'),
 
     lambda_expression: $ => prec.right(seq(
+      optional(choice(kw('Async'), kw('Iterator'))),
       choice(kw('Function'), kw('Sub')),
       '(',
       optional(commaSep($.lambda_parameter)),
@@ -802,6 +849,7 @@ module.exports = grammar({
       choice(
         $.expression,  // Single expression lambda
         seq(           // Multi-line lambda
+          optional(seq(kw('As'), field('return_type', $.type))),
           $._terminator,
           repeat($.statement),
           kw('End'), choice(kw('Function'), kw('Sub'))
@@ -820,17 +868,34 @@ module.exports = grammar({
       field('arguments', $.argument_list)
     )),
 
+    // `Create(Of T)`, `ImmutableArray(Of T).Empty`. Below invocation, so `Create(Of T)(x)`
+    // stays a call.
+    generic_name: $ => prec.left(0, seq(
+      field('target', choice($.member_access, $.identifier)),
+      $.type_argument_list
+    )),
+
+    // A tuple of two or more elements, each optionally named: `(1, "a")`, `(kind:=k, text:=t)`.
+    tuple_expression: $ => seq(
+      '(',
+      $.argument,
+      repeat1(seq(COMMA, $.argument)),
+      ')'
+    ),
+
     argument_list: $ => seq(
       '(',
+      optional($._newline),
       optional(seq(
         optional($.argument),
-        repeat(seq(token(seq(',', optional(/\r?\n/))), optional($.argument)))
+        repeat(seq(COMMA, optional($.argument)))
       )),
+      optional($._newline),
       ')'
     ),
     argument: $ => choice(
       $.expression,
-      seq(field('name', $.identifier), ':', '=', $.expression)  // named argument (Name:=Expr)
+      seq(field('name', $.identifier), ':', '=', optional($._newline), $.expression)  // named argument (Name:=Expr)
     ),
 
     // Member access (object.member) possibly spanning lines after the dot
@@ -841,7 +906,8 @@ module.exports = grammar({
     // ),
     member_access: $ => prec.left(10, seq(
       field('object', $.expression),
-      '.',
+      choice('.', '?.'),
+      optional($._newline),
       field('member', $.identifier)
     )),
 
@@ -852,7 +918,9 @@ module.exports = grammar({
     element_access: $ => seq(
       field('object', $.expression),
       '(',
+      optional($._newline),
       commaSep(field('index', $.expression)),
+      optional($._newline),
       ')'
     ),
 
@@ -863,18 +931,34 @@ module.exports = grammar({
     //   optional($.argument_list),
     //   optional($.object_initializers)
     // ),
-    new_expression: $ => seq(
-      kw('New'),
-      field('type', $.type),
-      optional($.argument_list),
-      optional(choice(
-        $.object_initializers,
-        $.with_initializer,
-        $.from_initializer
-      ))
+    // `New T(args)` calls a constructor, with or without `With {...}` or `From {...}`;
+    // `New T(bounds) {...}` creates an array. Both readings parse until the `{`, so the
+    // dynamic precedence decides: the argument list wins unless a `{...}` follows it.
+    new_expression: $ => choice(
+      prec.dynamic(2, seq(
+        kw('New'),
+        field('type', $.type),
+        $.argument_list,
+        optional(choice($.with_initializer, $.from_initializer))
+      )),
+      prec.dynamic(-1, seq(
+        kw('New'),
+        field('type', $.type),
+        $.argument_list,
+        $.object_initializers
+      )),
+      seq(
+        kw('New'),
+        field('type', $.type),
+        optional(choice(
+          $.object_initializers,
+          $.with_initializer,
+          $.from_initializer
+        ))
+      )
     ),
 
-    from_initializer: $ => seq(kw('From'), $.object_initializers),
+    from_initializer: $ => seq(kw('From'), optional($._newline), $.object_initializers),
 
     with_initializer: $ => seq(
       kw('With'),
@@ -907,7 +991,7 @@ module.exports = grammar({
 
     // Unary operators: e.g. -x, +x, Not x, AddressOf x
     unary_expression: $ => prec(8, seq(
-      field('operator', choice(kw('Not'), kw('AddressOf'), '-', '+')),
+      field('operator', choice(kw('Not'), kw('AddressOf'), kw('Await'), kw('TypeOf'), '-', '+')),
       field('operand', $.expression)
     )),
 
@@ -920,23 +1004,24 @@ module.exports = grammar({
         [4, kw('&')],                                  // string concatenation
         [3, choice('<<', '>>')],                       // bit shifts
         [2, choice('=', '<>', '<', '>', '<=', '>=', kw('Is'), kw('IsNot'), kw('Like'))],  
-        [1, choice(kw('TypeOf'))],                     // TypeOf ... Is ... (treated separately if needed)
         [0, choice(kw('And'), kw('Or'), kw('Xor'))],   // boolean/bitwise AND/OR/XOR
         [-1, choice(kw('AndAlso'), kw('OrElse'))]      // short-circuit logical operators (lowest precedence)
       ];
       // Build binary expression rules for each operator with correct precedence and associativity
       return choice(...table.map(([precedence, operator]) =>
-        prec.left(precedence, seq(field('left', $.expression), field('operator', operator), field('right', $.expression)))
+        prec.left(precedence, seq(field('left', $.expression), field('operator', operator), optional($._newline), field('right', $.expression)))
       ));
     },
 
     // Ternary conditional (IIf-like or If operator: If(condition, trueExpr, falseExpr))
-    ternary_expression: $ => prec.right(seq(
+    ternary_expression: $ => prec.right(1, seq(
       kw('If'),
       '(',
-      field('condition', $.expression), ',',
-      field('true_branch', $.expression), ',',
-      field('false_branch', $.expression),
+      optional($._newline),
+      field('condition', $.expression), COMMA,
+      field('true_branch', $.expression),
+      optional(seq(COMMA, field('false_branch', $.expression))),
+      optional($._newline),
       ')'
     )),
 
@@ -948,6 +1033,7 @@ module.exports = grammar({
       $.string_literal,
       $.character_literal,
       $.date_literal,
+      $.xml_cdata_literal,
       kw('Nothing')
     ),
 
@@ -980,7 +1066,7 @@ module.exports = grammar({
       // Regular string
       token(seq(
         '"',
-        repeat(choice(/[^"\r\n]/, /""/)),
+        repeat(choice(/[^"]/, /""/)),
         '"'
       )),
       // Interpolated string
@@ -990,8 +1076,10 @@ module.exports = grammar({
     interpolated_string_literal: $ => seq(
       '$"',
       repeat(choice(
-        /[^"{}\r\n]+/,  // Regular text
-        /""/,           // Escaped quote
+        token(prec(1, /[^"{}]+/)),  // Regular text, line breaks included; never a comment
+        token(prec(1, '""')),        // Escaped quote
+        token(prec(1, '{{')),        // Escaped braces
+        token(prec(1, '}}')),
         $.interpolation // Interpolated expression
       )),
       '"'
@@ -1000,7 +1088,8 @@ module.exports = grammar({
     interpolation: $ => seq(
       '{',
       $.expression,
-      optional(seq(':', /[^}]+/)), // Format specifier
+      optional(seq(',', $.expression)), // Alignment
+      optional(seq(':', token.immediate(prec(1, /[^}]+/)))), // Format specifier
       '}'
     ),
 
@@ -1009,6 +1098,12 @@ module.exports = grammar({
       choice(/[^"\r\n]/, /""/),  // exactly one character (or an escaped quote)
       '"',
       /[cC]/                    // 'C' suffix (case-insensitive)
+    )),
+
+    xml_cdata_literal: $ => token(seq(
+      '<', /[A-Za-z_][\w.:-]*/, '>',
+      '<![CDATA[', repeat(choice(/[^\]]/, /\][^\]]/, /\]\][^>]/)), ']]>',
+      '</', /[A-Za-z_][\w.:-]*/, '>'
     )),
 
     // Date literal: #MM/dd/yyyy [hh:mm[:ss] [AM|PM]]#
@@ -1022,6 +1117,8 @@ module.exports = grammar({
     // Split so the plain form can serve as the `word` token. Keyword extraction
     // only engages for a simple terminal, not a choice() of two patterns.
     identifier: $ => choice($._word_identifier, $._escaped_identifier),
+    // `Async` and `Iterator` start a lambda, but VB does not reserve them: `Iterator.Count` is a variable.
+    _contextual_keyword: $ => choice(kw('Async'), kw('Iterator')),
     _word_identifier: $ => /[A-Za-z_][A-Za-z_0-9]*[$%&@#!]?/,
     _escaped_identifier: $ => /\[(?:[^\]\r\n]+)\]/,
 
@@ -1058,7 +1155,7 @@ function kw(word) {
 
 // Helper: comma-separated list (one or more), allowing a newline after commas
 function commaSep1(rule) {
-  return seq(rule, repeat(seq(token(seq(',', optional(/\r?\n/))), rule)));
+  return seq(rule, repeat(seq(COMMA, rule)));
 }
 
 // Case-insensitive literal helper: creates a regex that matches the given keyword in any case
