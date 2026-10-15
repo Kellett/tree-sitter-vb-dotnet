@@ -815,6 +815,7 @@ module.exports = grammar({
     expression: $ => choice(
       $.literal,
       $.identifier,
+      alias($._contextual_keyword, $.identifier),
       $.parenthesized_expression,
       $.member_access,
       $.with_member_access,
@@ -1116,6 +1117,8 @@ module.exports = grammar({
     // Split so the plain form can serve as the `word` token. Keyword extraction
     // only engages for a simple terminal, not a choice() of two patterns.
     identifier: $ => choice($._word_identifier, $._escaped_identifier),
+    // `Async` and `Iterator` start a lambda, but VB does not reserve them: `Iterator.Count` is a variable.
+    _contextual_keyword: $ => choice(kw('Async'), kw('Iterator')),
     _word_identifier: $ => /[A-Za-z_][A-Za-z_0-9]*[$%&@#!]?/,
     _escaped_identifier: $ => /\[(?:[^\]\r\n]+)\]/,
 

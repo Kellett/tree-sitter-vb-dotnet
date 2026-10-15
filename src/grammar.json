@@ -8776,6 +8776,15 @@
           "name": "identifier"
         },
         {
+          "type": "ALIAS",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_contextual_keyword"
+          },
+          "named": true,
+          "value": "identifier"
+        },
+        {
           "type": "SYMBOL",
           "name": "parenthesized_expression"
         },
@@ -11588,6 +11597,35 @@
         {
           "type": "SYMBOL",
           "name": "_escaped_identifier"
+        }
+      ]
+    },
+    "_contextual_keyword": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "TOKEN",
+            "content": {
+              "type": "PATTERN",
+              "value": "[aA][sS][yY][nN][cC]"
+            }
+          },
+          "named": false,
+          "value": "Async"
+        },
+        {
+          "type": "ALIAS",
+          "content": {
+            "type": "TOKEN",
+            "content": {
+              "type": "PATTERN",
+              "value": "[iI][tT][eE][rR][aA][tT][oO][rR]"
+            }
+          },
+          "named": false,
+          "value": "Iterator"
         }
       ]
     },
